@@ -171,8 +171,8 @@ func (d *perceptual) Compare(a, b image.Image) (image.Image, int, error) {
 				}
 			}
 
-			c := color.NRGBA{0, 0, 0, 0xff}
 			if !pass {
+			    c := color.NRGBA{0, 0, 0, 0xff}
 				npix++
 				c.R = 0xff
 				//ar, ag, ab, _ := a.At(x, y).RGBA()
@@ -180,8 +180,8 @@ func (d *perceptual) Compare(a, b image.Image) (image.Image, int, error) {
 				//c.R = uint8((math.Abs(float64(ar)-float64(br)) / 0xffff) * 0xff)
 				//c.G = uint8((math.Abs(float64(ag)-float64(bg)) / 0xffff) * 0xff)
 				//c.B = uint8((math.Abs(float64(ab)-float64(bb)) / 0xffff) * 0xff)
+			    diff.Set(x, y, c)
 			}
-			diff.Set(x, y, c)
 		}
 	}
 
