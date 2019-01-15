@@ -19,11 +19,18 @@ import (
 	"image/color"
 	"math"
 	"sync"
+
+	"os"
+	"time"
+	"log"
+	"image/draw"
+	"image/png"
 )
 
 var (
 	// white values of XYZ colorspace
 	whiteX, whiteY, whiteZ float64
+
 )
 
 const (
@@ -50,10 +57,15 @@ type perceptual struct {
 	odp float64
 	// adaptation level index, starting from 0
 	ai int
+	// paralllel compare with height
+	ph int
+
+	// paraller compare use goroutine and channel
+	diffChs chan *PartialDiff
 }
 
 // NewPerceptual creates a new Differ based on perceptual diff algorithm.
-func NewPerceptual(gamma, luminance, fov, cf float64, nocolor bool) Differ {
+func NewPerceptual(gamma, luminance, fov, cf float64, nocolor bool, ph int) Differ {
 	d := &perceptual{
 		gamma:   gamma,
 		lum:     luminance,
@@ -61,6 +73,8 @@ func NewPerceptual(gamma, luminance, fov, cf float64, nocolor bool) Differ {
 		cf:      cf,
 		nocolor: nocolor,
 		odp:     2 * math.Tan(fov*0.5*math.Pi/180) * 180 / math.Pi,
+		ph: ph,
+		diffChs: make(chan *PartialDiff, 10),
 	}
 	for n := 1.0; !(n > d.odp); n *= 2 {
 		d.ai++
@@ -78,8 +92,123 @@ func NewPerceptual(gamma, luminance, fov, cf float64, nocolor bool) Differ {
 //   cf = 1.0
 //   nocolor = false
 func NewDefaultPerceptual() Differ {
-	return NewPerceptual(2.2, 100.0, 45.0, 1.0, false)
+	return NewPerceptual(2.2, 100.0, 45.0, 1.0, false, 900)
 }
+
+type PartialDiff struct {
+	Partial   int
+	Diff      image.Image
+	Ndiff     int
+}
+
+// Parallel Compare image with goroutine
+func (d *perceptual) ParallelCompare(a, b image.Image) (image.Image, int, error) {
+	ab, bb := a.Bounds(), b.Bounds()
+	w, h := ab.Dx(), ab.Dy()
+	if w != bb.Dx() || h != bb.Dy() {
+		return nil, -1, ErrSize
+	}
+
+	var(
+		count = 0
+	)
+
+	if h % d.ph == 0 {
+		count = h / d.ph
+	} else {
+		count = h / d.ph + 1
+	}
+
+	for i := 0; i < count; i++ {
+		currentH := d.ph
+		currentY := (i + 1) * currentH
+		if (i + 1) * d.ph >= h {
+			currentH = h - i * d.ph
+			currentY = h
+		}
+
+		// TODO: need to support other type
+		// example: jpeg(ycbcr) png(RGBA/NRGBA) gif(Paletted) bmp(RGBA)...
+		subA := a.(*image.NRGBA).SubImage(image.Rect(0, i * d.ph,  w, currentY))
+		subB := b.(*image.NRGBA).SubImage(image.Rect(0, i * d.ph,  w, currentY))
+
+		subARGBA := image.NewNRGBA(image.Rect(0, 0, subA.Bounds().Dx(), subA.Bounds().Dy()))
+		draw.Draw(subARGBA, subARGBA.Bounds(), subA, subA.Bounds().Min, draw.Src)
+		subBRGBA := image.NewNRGBA(image.Rect(0, 0, subB.Bounds().Dx(), subB.Bounds().Dy()))
+		draw.Draw(subBRGBA, subBRGBA.Bounds(), subB, subB.Bounds().Min, draw.Src)
+
+		go d.partialCompare(i, subARGBA, subBRGBA)
+	}
+
+	diff := image.NewNRGBA(image.Rect(0, 0, w, h))
+	diffResult := make(map[int]*PartialDiff)
+	over := make(chan struct{}, 0)
+	npix := 0
+	go func() {
+		c := 0
+		for partialDiff := range d.diffChs {
+			diffResult[partialDiff.Partial] = partialDiff
+			npix += partialDiff.Ndiff
+			c ++
+			if c == count {
+				over <- struct {}{}
+			}
+		}
+	}()
+
+	select {
+	case <- time.After(30 * time.Second):
+		close(d.diffChs)
+	case <- over:
+		close(d.diffChs)
+
+		for i := 0; i < count; i++ {
+			diffImg := diffResult[i].Diff
+			draw.Draw(diff, diff.Bounds(), diffImg, diffImg.Bounds().Min.Sub(image.Pt(0, i * d.ph)), draw.Over)
+		}
+
+		f, err := os.OpenFile("diff.png", os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+
+		err = png.Encode(f, diff)
+		if err != nil {
+			return nil, -1, err
+		}
+
+		return diff, npix, nil
+	}
+
+
+
+	return diff, npix, nil
+}
+
+
+// Compare compares a and b using pdiff algorithm.
+func (d *perceptual) partialCompare(partial int, a, b image.Image) (*PartialDiff, error) {
+	start := time.Now()
+
+	diff, npix, err := d.Compare(a, b)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Println("==== finish partial", partial, "use:", (time.Now().UnixNano() - start.UnixNano())/int64(time.Millisecond))
+
+	partialDiff := &PartialDiff{
+		Partial: partial,
+		Diff: diff,
+		Ndiff: npix,
+	}
+
+	d.diffChs <- partialDiff
+
+	return partialDiff, nil
+}
+
 
 // Compare compares a and b using pdiff algorithm.
 func (d *perceptual) Compare(a, b image.Image) (image.Image, int, error) {
@@ -121,6 +250,7 @@ func (d *perceptual) Compare(a, b image.Image) (image.Image, int, error) {
 	wg.Wait()
 
 	var npix int // num of diff pixels
+
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			adapt := math.Max(0.5*(aLap[d.ai][y][x]+bLap[d.ai][y][x]), 1e-5)
@@ -172,7 +302,7 @@ func (d *perceptual) Compare(a, b image.Image) (image.Image, int, error) {
 			}
 
 			if !pass {
-			    c := color.NRGBA{0, 0, 0, 0xff}
+				c := color.NRGBA{0, 0, 0, 0xff}
 				npix++
 				c.R = 0xff
 				//ar, ag, ab, _ := a.At(x, y).RGBA()
@@ -180,7 +310,7 @@ func (d *perceptual) Compare(a, b image.Image) (image.Image, int, error) {
 				//c.R = uint8((math.Abs(float64(ar)-float64(br)) / 0xffff) * 0xff)
 				//c.G = uint8((math.Abs(float64(ag)-float64(bg)) / 0xffff) * 0xff)
 				//c.B = uint8((math.Abs(float64(ab)-float64(bb)) / 0xffff) * 0xff)
-			    diff.Set(x, y, c)
+				diff.Set(x, y, c)
 			}
 		}
 	}

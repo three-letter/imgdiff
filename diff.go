@@ -34,4 +34,5 @@ type Differ interface {
 	// It returns ErrSize if images have their width or height
 	// do not match.
 	Compare(a, b image.Image) (image.Image, int, error)
+	ParallelCompare(a, b image.Image) (image.Image, int, error)
 }
