@@ -129,17 +129,12 @@ func (d *perceptual) ParallelCompare(a, b image.Image) (image.Image, int, error)
 			currentY = h
 		}
 
-		// TODO: need to support other type
+		// TODO: only support jpeg(ycbcr), need to support other type,
 		// example: jpeg(ycbcr) png(RGBA/NRGBA) gif(Paletted) bmp(RGBA)...
-		subA := a.(*image.NRGBA).SubImage(image.Rect(0, i * d.ph,  w, currentY))
-		subB := b.(*image.NRGBA).SubImage(image.Rect(0, i * d.ph,  w, currentY))
+		subA := a.(*image.YCbCr).SubImage(image.Rect(0, i * d.ph,  w, currentY))
+		subB := b.(*image.YCbCr).SubImage(image.Rect(0, i * d.ph,  w, currentY))
 
-		subARGBA := image.NewNRGBA(image.Rect(0, 0, subA.Bounds().Dx(), subA.Bounds().Dy()))
-		draw.Draw(subARGBA, subARGBA.Bounds(), subA, subA.Bounds().Min, draw.Src)
-		subBRGBA := image.NewNRGBA(image.Rect(0, 0, subB.Bounds().Dx(), subB.Bounds().Dy()))
-		draw.Draw(subBRGBA, subBRGBA.Bounds(), subB, subB.Bounds().Min, draw.Src)
-
-		go d.partialCompare(i, subARGBA, subBRGBA)
+		go d.partialCompare(i, subA, subB)
 	}
 
 	diff := image.NewNRGBA(image.Rect(0, 0, w, h))
