@@ -25,6 +25,8 @@ import (
 	"log"
 	"image/draw"
 	"image/png"
+	"bytes"
+	"io"
 )
 
 var (
@@ -164,6 +166,9 @@ func (d *perceptual) ParallelCompare(a, b image.Image) (image.Image, int, error)
 
 		for i := 0; i < count; i++ {
 			diffImg := diffResult[i].Diff
+			if diffImg == nil {
+				continue
+			}
 			draw.Draw(diff, diff.Bounds(), diffImg, diffImg.Bounds().Min.Sub(image.Pt(0, i * d.ph)), draw.Over)
 		}
 
@@ -190,6 +195,20 @@ func (d *perceptual) ParallelCompare(a, b image.Image) (image.Image, int, error)
 // Compare compares a and b using pdiff algorithm.
 func (d *perceptual) partialCompare(partial int, a, b image.Image) (*PartialDiff, error) {
 	start := time.Now()
+
+	imgABytes := imageToBytes(a)
+	imgBBytes := imageToBytes(b)
+	if bytes.Equal(imgABytes, imgBBytes) {
+		log.Println("==== image compare with same bytes, skip:", partial, a.Bounds().String())
+		partialDiff := &PartialDiff{
+			Partial: partial,
+			Diff: nil,
+			Ndiff: 0,
+		}
+
+		d.diffChs <- partialDiff
+		return partialDiff, nil
+	}
 
 	diff, npix, err := d.Compare(a, b)
 	if err != nil {
@@ -450,4 +469,33 @@ func tvi(al float64) float64 {
 	}
 
 	return math.Pow(10.0, r)
+}
+
+
+//
+func writeUint32(w io.Writer, n uint32) {
+	w.Write([]byte{
+		byte((n >> 24) & 0xff),
+		byte((n >> 16) & 0xff),
+		byte((n >> 8) & 0xff),
+		byte((n >> 0) & 0xff),
+	})
+}
+
+func imageToBytes(img image.Image) []byte {
+	buf := &bytes.Buffer{}
+	w := img.Bounds().Size().X
+	h := img.Bounds().Size().Y
+
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			writeUint32(buf, r)
+			writeUint32(buf, g)
+			writeUint32(buf, b)
+			writeUint32(buf, a)
+		}
+	}
+
+	return buf.Bytes()
 }
