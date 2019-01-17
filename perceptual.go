@@ -24,7 +24,7 @@ import (
 	"time"
 	"log"
 	"image/draw"
-	"image/png"
+	"image/jpeg"
 	"bytes"
 	"io"
 )
@@ -134,7 +134,12 @@ func (d *perceptual) ParallelCompare(a, b image.Image) (image.Image, int, error)
 		subA := a.(*image.YCbCr).SubImage(image.Rect(0, i * d.ph,  w, currentY))
 		subB := b.(*image.YCbCr).SubImage(image.Rect(0, i * d.ph,  w, currentY))
 
-		go d.partialCompare(i, subA, subB)
+		subARGBA := image.NewNRGBA(image.Rect(0, 0, subA.Bounds().Dx(), subA.Bounds().Dy()))
+		draw.Draw(subARGBA, subARGBA.Bounds(), subA, subA.Bounds().Min, draw.Src)
+		subBRGBA := image.NewNRGBA(image.Rect(0, 0, subB.Bounds().Dx(), subB.Bounds().Dy()))
+		draw.Draw(subBRGBA, subBRGBA.Bounds(), subB, subB.Bounds().Min, draw.Src)
+
+		go d.partialCompare(i, subARGBA, subBRGBA)
 	}
 
 	diff := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -167,13 +172,13 @@ func (d *perceptual) ParallelCompare(a, b image.Image) (image.Image, int, error)
 			draw.Draw(diff, diff.Bounds(), diffImg, diffImg.Bounds().Min.Sub(image.Pt(0, i * d.ph)), draw.Over)
 		}
 
-		f, err := os.OpenFile("diff.png", os.O_WRONLY|os.O_CREATE, 0644)
+		f, err := os.OpenFile("diff.jpeg", os.O_WRONLY|os.O_CREATE, 0644)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer f.Close()
 
-		err = png.Encode(f, diff)
+		err = jpeg.Encode(f, diff, nil)
 		if err != nil {
 			return nil, -1, err
 		}
